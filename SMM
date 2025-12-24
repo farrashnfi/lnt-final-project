@@ -1,0 +1,87 @@
+import time                     # library waktu (delay & timer)
+import board                    # mapping pin Raspberry Pi
+import adafruit_dht             # library sensor DHT11
+import requests                 # komunikasi HTTP ke Blynk
+import RPi.GPIO as GPIO         # kontrol GPIO Raspberry Pi
+
+LED_PIN = 17                    # GPIO untuk LED
+MQ2_PIN = 27                    # GPIO untuk sensor gas MQ-2
+
+GPIO.setmode(GPIO.BCM)          # gunakan penomoran GPIO BCM
+GPIO.setup(LED_PIN, GPIO.OUT)   # set LED sebagai output
+GPIO.setup(MQ2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # MQ-2 input + pull-up
+
+pwm = GPIO.PWM(LED_PIN, 1000)   # aktifkan PWM di LED (1 kHz)
+pwm.start(0)                    # mulai PWM dengan duty cycle 0%
+
+dht = adafruit_dht.DHT11(board.D4)  # DHT11 terhubung ke GPIO 4
+
+BLYNK_TOKEN = "JQB4jDTISjKhpkHSVXkkTFuURxVhxsqB"  # token Blynk
+BLYNK_UPDATE = "https://blynk.cloud/external/api/update"  # URL kirim data
+BLYNK_GET = "https://blynk.cloud/external/api/get"        # URL ambil data
+
+brightness = 50                 # nilai awal intensitas LED
+last_temp = None                # simpan suhu terakhir
+last_hum = None                 # simpan kelembapan terakhir
+
+LED_ON_DURATION = 60             # durasi LED nyala (detik)
+LED_OFF_DURATION = 60            # durasi LED mati (detik)
+
+led_state = False                # status LED (ON/OFF)
+last_toggle_time = time.time()   # waktu terakhir LED berubah
+
+time.sleep(60)                   # warm-up sensor MQ-2
+
+while True:                      # loop utama program
+    now = time.time()            # ambil waktu sekarang
+
+    r = requests.get(BLYNK_GET, params={  # ambil nilai slider dari Blynk
+        "token": BLYNK_TOKEN, "V2": ""
+    })
+
+    if r.text.strip().isdigit():             # cek apakah data valid
+        brightness = max(0, min(100, int(r.text.strip())))  # batasi 0–100
+
+    if led_state and (now - last_toggle_time >= LED_ON_DURATION):  # jika LED ON & waktu habis
+        led_state = False            # ubah status LED ke OFF
+        last_toggle_time = now       # reset timer
+
+    elif (not led_state) and (now - last_toggle_time >= LED_OFF_DURATION):  # jika LED OFF & waktu habis
+        led_state = True             # ubah status LED ke ON
+        last_toggle_time = now       # reset timer
+
+    if led_state:                    # jika LED ON
+        pwm.ChangeDutyCycle(brightness)  # atur intensitas sesuai slider
+    else:
+        pwm.ChangeDutyCycle(0)       # matikan LED
+
+    try:
+        temp = dht.temperature       # baca suhu
+        hum = dht.humidity           # baca kelembapan
+        last_temp = temp             # simpan suhu
+        last_hum = hum               # simpan kelembapan
+    except:
+        pass                         # abaikan error kecil DHT11
+
+    if last_temp is not None:
+        requests.get(BLYNK_UPDATE, params={  # kirim suhu ke Blynk
+            "token": BLYNK_TOKEN, "V1": last_temp
+        })
+
+    if last_hum is not None:
+        requests.get(BLYNK_UPDATE, params={  # kirim kelembapan ke Blynk
+            "token": BLYNK_TOKEN, "V0": last_hum
+        })
+
+    gas = GPIO.input(MQ2_PIN)        # baca status sensor gas
+
+    if gas == 0:                     # ACTIVE LOW → gas terdeteksi
+        requests.get(BLYNK_UPDATE, params={
+            "token": BLYNK_TOKEN, "V3": 1
+        })
+    else:
+        requests.get(BLYNK_UPDATE, params={
+            "token": BLYNK_TOKEN, "V3": 0
+        })
+
+    time.sleep(2)                    # delay loop 2 detik
